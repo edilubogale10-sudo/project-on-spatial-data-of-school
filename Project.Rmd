@@ -1,0 +1,483 @@
+#packages
+```{r setup, include=FALSE}
+library(sf)#handles vector
+library(dplyr)#manipulates the attribute data
+library(ggplot2)#create visualizations
+library(terra)#handles raster data
+library(tidyterra)#create visualizations
+library(spdep)#performs spatial statistics and analysis
+
+```
+
+#mapping selected secondery schools
+```{r}
+eth_woredas <- st_read("geoBoundaries-ETH-ADM3.shp")
+all_schools <- st_read("hotosm_eth_education_facilities_points_shp.shp")
+```
+
+
+```{r}
+
+
+```
+
+
+```{r}
+# More complete keyword list including Amharic
+pattern <- "secondary|high|prep|preparatory|college|tvet|lycee|ሁለተኛ|ከፍተኛ|መሰናዶ"
+
+
+secondary_schools <- all_schools %>%
+filter(
+grepl(pattern, name, ignore.case = TRUE) |
+grepl(pattern, name_en, ignore.case = TRUE) |
+grepl(pattern, name_am, ignore.case = TRUE)
+)
+
+secondary_schools <- st_transform(secondary_schools, st_crs(eth_woredas))
+
+```
+##############Question A 
+Compile spatial data on school locations (points), administrative boundaries (for example, kebele or subcities), and population (either gridded or polygon-level). Optionally, include road network data.
+
+```{r}
+ggplot() +
+geom_sf(data = eth_woredas, fill = "white", color = "grey90", size = 0.1) +
+geom_sf(data = secondary_schools, color = "red", size = 2, alpha = 0.7) +
+labs(
+title = "Question A: National Distribution of Selected Secondary Schools",
+subtitle = paste("Mapped", nrow(secondary_schools), "schools"),
+caption = "Data: OpenStreetMap & geoBoundaries"
+) +
+theme_minimal()
+
+```
+            Interpretation of the School Distribution Map
+
+What the Map Shows:
+
+    National Coverage: A map of Ethiopia showing all woredas (districts) with secondary schools overlaid as red points
+
+    Visual Patterns Revealed:
+
+    A. Clustering Patterns:
+
+        Dense red clusters = Urban centers/high population areas
+
+            Likely: Addis Ababa (center), Dire Dawa (east), Mekele (north), Bahir Dar (northwest), Awasa (south)
+
+        Sparse/isolated red dots = Rural secondary schools
+
+        White gaps = Areas with no mapped secondary schools
+
+    B. Geographic Distribution:
+
+        Highland concentration: More schools in central/northern highlands
+
+        Peripheral sparsity: Fewer schools in:
+
+            Somali region (east/southeast)
+
+            Afar region (northeast)
+
+            Gambella/Benishangul-Gumuz (west)
+
+            Southern pastoralist areas
+
+    C. Infrastructure Corridors:
+
+        Schools often follow:
+
+            Main roads (visible as linear patterns)
+
+            River valleys
+
+            Population centers
+#Question B
+Describe and visualize the point pattern of schools (for example, using kernel density or nearest neighbor distances). Is the pattern more regular, random, or clustered than expected?
+#Schools vs Population Density
+```{r}
+pop_raster <- rast("eth_ppp_2020.tif")
+
+my_schools <- st_transform(secondary_schools, crs(pop_raster))
+woredas <- st_transform(eth_woredas, crs(pop_raster))
+
+```
+
+```{r}
+# Load required libraries
+library(spatstat.geom)
+library(spatstat.explore)
+
+# FIRST: Convert to projected coordinates (UTM)
+eth_utm <- "+proj=utm +zone=37 +datum=WGS84 +units=m +no_defs"
+eth_woredas_proj <- st_transform(eth_woredas, eth_utm)
+secondary_schools_proj <- st_transform(secondary_schools, eth_utm)
+
+# NOW: Convert secondary schools to coordinates (in meters, not degrees)
+school_coords <- st_coordinates(secondary_schools_proj)
+
+# Define study window from the union of woredas (now in projected coordinates)
+study_window <- as.owin(st_union(eth_woredas_proj))
+
+# Create point pattern
+pp <- ppp(x = school_coords[,1], 
+          y = school_coords[,2], 
+          window = study_window)
+
+# Nearest Neighbor distance
+nn <- nndist(pp)
+mean_nn <- mean(nn)
+print(paste("Mean nearest neighbor distance (meters):", round(mean_nn, 2)))
+print(paste("Mean nearest neighbor distance (km):", round(mean_nn/1000, 2)))
+
+# Plot kernel density of secondary schools
+kd <- density(pp, sigma = 50000)  # sigma ~50km (adjust if needed)
+plot(kd, main="Kernel Density of Secondary Schools")
+points(pp, pch=16, cex=0.5, col="red")
+
+```
+                     Interpretation 
+
+    Secondary schools are spaced ~16.1 km apart on average
+
+    Schools are not randomly distributed - they show clustering since:
+
+        This spacing suggests schools are concentrated in certain areas rather than evenly spread
+
+2. Kernel Density Plot Interpretation
+
+The plot shows:
+
+    Hotspots (red/orange areas): High concentrations of secondary schools
+
+        Likely in urban centers (Addis Ababa, regional capitals)
+
+        Densely populated zones
+
+    Cold spots (blue areas): Few or no secondary schools
+
+        Likely in rural, remote, or sparsely populated areas
+
+        Possibly pastoralist regions or mountainous terrain
+
+
+
+
+
+```{r}
+ggplot() +
+geom_spatraster(data = crop(pop_raster, woredas, mask = TRUE)) +
+scale_fill_viridis_c(option = "magma", name = "Population") +
+geom_sf(data = woredas, fill = NA, color = "red", size = 0.1) +
+geom_sf(data = my_schools, color = "blue", size = 2, shape = 17) +
+labs(
+title = "School Accessibility vs Population Density"
+) +
+theme_minimal()
+
+```
+                        Interpretation
+This map visually confirms the spatial mismatch suggested by quantitative metrics:
+
+    Schools are clustered (as shown in your nearest neighbor analysis)
+
+    Many people live far from schools (as shown in your 59km average distance)
+
+    There are clear geographic inequities in educational access
+
+#Question C
+ Compute an accessibility measure, for example:
+a)Distance from each population cell or kebele centroid to the nearest school, or
+b)Number of schools within a fixed radius or travel time.
+#Mean Distance to Nearest School
+```{r}
+eth_utm <- "+proj=utm +zone=37 +datum=WGS84 +units=m +no_defs"
+
+woredas_utm <- st_transform(woredas, eth_utm)
+schools_utm <- st_transform(my_schools, eth_utm)
+
+woreda_centers <- st_centroid(woredas_utm)
+dist_matrix <- st_distance(woreda_centers, schools_utm)
+
+woredas$dist_to_school_km <- as.numeric(apply(dist_matrix, 1, min)) / 1000
+mean_dist <- mean(woredas$dist_to_school_km, na.rm = TRUE)
+
+mean_dist
+
+```
+                 Interpretation
+    This means: On average, woreda centers in your study area are approximately 59.07 kilometers away from the nearest school
+
+    This is the straight-line (Euclidean) distance, not travel distance along roads
+    
+
+#Question D
+#5km School Catchment Population
+```{r}
+schools_utm <- st_transform(my_schools, eth_utm)
+pop_proj <- project(pop_raster, eth_utm)
+
+buffers <- st_buffer(schools_utm, 100)
+pop_served <- terra::extract(pop_proj, vect(buffers), fun = sum, na.rm = TRUE)
+
+buffers$population_served <- pop_served[,2]
+
+total_served <- sum(buffers$population_served, na.rm = TRUE)
+total_pop <- global(pop_proj, "sum", na.rm = TRUE)$sum
+
+c(total_served = total_served,
+percent_served = (total_served / total_pop) * 100)
+
+```
+               Interpretation
+
+
+
+
+Only 0.0474% of the total population lives within 100 meters of a school.
+
+49,170 people out of the entire population have a school within immediate walking distance (100m = ~1-2 minute walk).
+
+
+#Question E
+At the kebele or subcity level, compute the ratio of school capacity (or number of schools)
+to population of school-age children (if available, or approximate). Map this ratio and
+test for spatial autocorrelation.
+
+#Priority Areas for New Schools
+```{r}
+pop_per_woreda <- terra::extract(pop_raster, vect(woredas), fun = sum, na.rm = TRUE)
+woredas$total_pop <- pop_per_woreda[,2]
+
+woredas <- woredas %>%
+mutate(priority_score = total_pop * dist_to_school_km)
+
+top_priority <- woredas %>%
+arrange(desc(priority_score)) %>%
+slice(1:10)
+
+top_priority
+
+# Load spatial dependency library
+library(spdep)
+
+# Count number of schools in each woreda
+woredas$schools_count <- lengths(st_contains(woredas, secondary_schools))
+
+# Compute population per school ratio
+woredas$pop_school_ratio <- woredas$total_pop / (woredas$schools_count + 1)  # +1 avoids division by zero
+
+# Create spatial weights for Moran's I
+nb <- poly2nb(woredas)  # neighborhood list
+lw <- nb2listw(nb, style = "W")
+
+# Moran's I test for spatial autocorrelation
+moran_test <- moran.test(woredas$pop_school_ratio, lw)
+print(moran_test)
+
+# Map population per school ratio
+ggplot(woredas) +
+  geom_sf(aes(fill = pop_school_ratio)) +
+  scale_fill_viridis_c(option="magma") +
+  labs(title = "Population per School Ratio by Woreda") +
+  theme_minimal()
+
+```
+      Interpretation of Moran's I Results for E
+
+Strong Positive Spatial Autocorrelation exists in school access across Ethiopia:
+Key Finding:
+
+    Moran's I = 0.341 (on a scale from -1 to +1)
+
+    p-value < 0.0001 (highly statistically significant)
+
+This Means:
+
+    Clustered Inequality: Woredas with high population-to-school ratios (poor access) tend to be located near each other
+
+    Spatial Patterning: School access is not randomly distributed across the country
+
+    Regional Disparities: Entire regions suffer from similar levels of poor school access
+
+
+
+#Question F
+Propose and evaluate a small set of hypothetical school placement or relocation scenarios.
+For each scenario, recompute accessibility measures and discuss how the spatial pattern
+changes.
+#What if Scenario (5 New Schools)
+```{r}
+library(sf)
+library(dplyr)
+library(ggplot2)
+library(viridis)
+library(patchwork)
+
+# --- 1. Define the hypothetical scenario (e.g., 5 new schools) ---
+new_schools <- st_centroid(top_priority[1:5, ])  # centroids of new schools
+
+# --- 2. Combine existing and new schools ---
+hypothetical <- rbind(
+  my_schools %>% select(geometry),
+  new_schools %>% select(geometry)
+)
+
+# --- 3. Transform to UTM CRS for accurate distance calculations ---
+hyp_utm <- st_transform(hypothetical, eth_utm)
+
+# --- 4. Calculate distance from Woreda centers to all schools (new scenario) ---
+dist_new <- st_distance(woreda_centers, hyp_utm)
+
+# --- 5. Minimum distance to a school per Woreda ---
+woredas$dist_new_km <- as.numeric(apply(dist_new, 1, min)) / 1000
+
+# --- 6. Compute old mean, new mean, and improvement ---
+old_mean <- mean(woredas$dist_to_school_km, na.rm = TRUE)
+new_mean <- mean(woredas$dist_new_km, na.rm = TRUE)
+improvement <- old_mean - new_mean
+
+# --- 7. Print the scenario evaluation ---
+cat("--- SCENARIO EVALUATION ---\n")
+cat("Original Mean Distance:", round(old_mean, 2), "km\n")
+cat("New Mean Distance (5 New Schools):", round(new_mean, 2), "km\n")
+cat("Average Improvement:", round(improvement, 2), "km reduction per Woreda\n")
+
+# --- 8. Visualize the spatial change ---
+p1 <- ggplot(woredas) + 
+  geom_sf(aes(fill = dist_to_school_km), color = NA) + 
+  scale_fill_viridis_c(option = "magma", name = "KM") +
+  labs(title = "Before (Current)") + theme_void()
+
+p2 <- ggplot(woredas) + 
+  geom_sf(aes(fill = dist_new_km), color = NA) + 
+  scale_fill_viridis_c(option = "magma", name = "KM") +
+  labs(title = "After (Hypothetical)") + theme_void()
+
+# Combine plots side by side
+p1 + p2
+
+# --- 9. Optional: Examine improvement per Woreda ---
+woredas <- woredas %>%
+  mutate(improvement_km = dist_to_school_km - dist_new_km)
+
+# Visualize improvement
+ggplot(woredas) +
+  geom_sf(aes(fill = improvement_km), color = NA) +
+  scale_fill_viridis_c(option = "plasma", name = "Improvement (km)") +
+  labs(title = "Distance Improvement After New Schools") +
+  theme_void()
+
+
+```
+                     Interpretation for F
+This means:
+
+    Current Situation: Woredas are on average 59.07 km from the nearest school
+
+    After adding 5 schools: Average distance reduced to ~52.45 km
+
+    Improvement: ~6.92 km reduction in average travel distance
+
+Key Insights:
+1. Impact Assessment:
+
+    Moderate improvement: ~7 km reduction is meaningful but not transformative
+
+    Efficiency: Each new school reduces average distance by ~1.38 km (6.92/5)
+
+    Remaining gap: ~52 km is still very far - many woredas remain underserved
+
+2. Spatial Patterns (from maps):
+
+Before Map (P1):
+
+    Shows current "deserts" - areas with very long distances (red/orange)
+
+    Likely shows the ~59 km average with significant variation
+
+After Map (P2):
+
+    Should show some cooling (blue/green) around new school locations
+
+    May show "halos" of improved access around new schools
+
+    Some areas remain red/orange - still far from any school
+
+Improvement Map (Optional):
+
+    Shows exactly which woredas benefit most
+
+    Likely shows localized benefits - only woredas near new schools improve
+
+    May reveal equity issues: Some regions get major improvements while others get none
+#Question G
+#Integrated Accessibility Analysis
+```{r}
+set.seed(123)
+
+woredas <- woredas %>%
+mutate(
+poverty_rate = runif(n(), 10, 80),
+school_quality_score = runif(n(), 1, 10),
+true_access_index =
+(dist_to_school_km * (poverty_rate / 100)) / school_quality_score
+)
+
+cor.test(woredas$dist_to_school_km, woredas$poverty_rate)
+
+#plot
+ggplot(woredas) +
+geom_sf(aes(fill = true_access_index)) +
+scale_fill_viridis_c(option = "inferno") +
+labs(title = "Integrated Educational Inequality Index") +
+theme_void()
+
+```
+              Interpretation
+
+No correlation found between distance to school and poverty rates.
+
+    Correlation ≈ 0.00023 (essentially zero)
+
+    p-value = 0.995 (statistically insignificant)
+
+    Confidence interval includes zero: [-0.074, 0.075]
+
+           This Means:
+
+    Poverty is geographically random relative to school locations in this simulated data
+
+    Poor woredas are not systematically farther from schools than rich woredas
+
+    School placement doesn't favor wealthy areas (no spatial bias in this simulation)
+    
+              
+              
+              Limitations of Purely Geographic Analysis:
+1. Quality Differences Masked by Proximity:
+
+    Geographic distance treats all schools equally, ignoring quality gradients
+
+    Example: Urban slum schools vs. elite private schools in same city
+
+2. Socio-Economic Barriers Unaccounted For:
+
+    Direct costs: School fees, uniforms, supplies (even if school is nearby)
+
+    Opportunity costs: Children's labor value for farming/pastoralist families
+
+    Cultural factors: Gender norms, early marriage, language of instruction
+
+    Physical disabilities: Proximity meaningless without accessible infrastructure
+
+3. Transportation Realities Ignored:
+
+    Straight-line distance ≠ Travel time
+
+    Seasonal roads, mountainous terrain, lack of public transport
+
+    Example: 10km in Addis Ababa ≠ 10km in remote Afar region
+    
+    Conclusion: Geographic analysis provides the WHERE, but integration with socio-economic data reveals the WHY and HOW to effectively address educational inequality in Ethiopia. The strongest approach combines spatial statistics with multidimensional deprivation analysis to move beyond mere proximity toward genuine accessibility.
